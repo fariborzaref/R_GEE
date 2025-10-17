@@ -17,14 +17,21 @@ to_install <- setdiff(req, rownames(installed.packages()))
 if(length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
 invisible(lapply(req, library, character.only = TRUE))
 
-theme_set(theme_minimal(base_size = 13))
+# Elite balanced academic theme
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+      axis.title = element_text(size = 11),
+      axis.text  = element_text(size = 10),
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.title = element_text(size = 10),
+      legend.text  = element_text(size = 9)
+    )
+)
 set.seed(2025)
 
 # ====================== 1) DATA: READ OR SIMULATE =================
-# If you have real data, create R_GEE/gee_input.csv with columns:
-#   community_id, age, income, education, gender, outcome (0/1)
-# education in {Low,Medium,High}; gender in {Male,Female}
-
 path <- "R_GEE/gee_input.csv"
 if (file.exists(path)) {
   df <- fread(path)
@@ -37,7 +44,6 @@ if (file.exists(path)) {
     poor_health = as.integer(outcome)
   )
 } else {
-  # Simulated clustered data (realistic scale)
   n_clusters <- 60; n_i <- 10
   df <- data.frame(
     community_id = rep(seq_len(n_clusters), each = n_i),
@@ -48,7 +54,6 @@ if (file.exists(path)) {
     gender = factor(sample(c("Male","Female"), n_clusters*n_i, TRUE),
                     levels = c("Male","Female"))
   )
-  # latent logit for poor health (1 = poor)
   lp <- -3.2 + 0.05*(df$age - 40) - 0.00002*(df$income - 55000) -
         0.35*(df$education == "Medium") - 0.8*(df$education == "High") -
         0.25*(df$gender == "Female")
@@ -56,7 +61,6 @@ if (file.exists(path)) {
   df$poor_health <- rbinom(nrow(df), 1, p)
 }
 
-# Quick sanity
 stopifnot(all(df$poor_health %in% c(0,1)))
 df <- df |> mutate(
   education = droplevels(education),
@@ -66,7 +70,6 @@ df <- df |> mutate(
 # ====================== 2) MODEL SPECIFICATION ====================
 form <- poor_health ~ age + income + education + gender
 
-# Fit with three working correlations
 fit_exch <- geeglm(form, id = community_id, data = df,
                    family = binomial("logit"), corstr = "exchangeable")
 fit_ar1  <- geeglm(form, id = community_id, data = df,
@@ -74,7 +77,6 @@ fit_ar1  <- geeglm(form, id = community_id, data = df,
 fit_ind  <- geeglm(form, id = community_id, data = df,
                    family = binomial("logit"), corstr = "independence")
 
-# QIC comparison (lower is better)
 qic_tbl <- tibble(
   model = c("exchangeable","ar1","independence"),
   QIC   = c(QIC(fit_exch)[1], QIC(fit_ar1)[1], QIC(fit_ind)[1]),
@@ -82,7 +84,6 @@ qic_tbl <- tibble(
 ) |> arrange(QIC)
 cat("\n=== QIC (MODEL SELECTION) ===\n"); print(qic_tbl)
 
-# Choose best working correlation by QIC
 best_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[c("exch","ar1","ind")[which.min(qic_tbl$QIC)]]]
 cat("\nSelected correlation structure:", best_fit$corstr, "\n")
 
@@ -96,15 +97,11 @@ coefs <- coefs |> select(term, Estimate, Std.err = Std.err, p = `Pr(>|W|)`) |>
     lo95 = exp(Estimate - 1.96*Std.err),
     hi95 = exp(Estimate + 1.96*Std.err)
   )
-
-cat("\n=== POPULATION-AVERAGE EFFECTS (LOGIT LINK) ===\n")
-print(coefs)
+cat("\n=== POPULATION-AVERAGE EFFECTS (LOGIT LINK) ===\n"); print(coefs)
 
 # ====================== 4) SENSITIVITY CHECKS =====================
-# (a) Link function sensitivity: probit vs logit
 fit_probit <- geeglm(form, id = community_id, data = df,
                      family = binomial("probit"), corstr = best_fit$corstr)
-# (b) Correlation sensitivity: second-best QIC
 second_idx <- order(qic_tbl$QIC)[2]
 second_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[c("exch","ar1","ind")[second_idx]]]
 
@@ -116,7 +113,6 @@ sens_tbl <- tibble(
 cat("\n=== SENSITIVITY (KEY COEFFICIENTS) ===\n"); print(round(sens_tbl, 4))
 
 # ====================== 5) CLUSTER INFLUENCE (LOCO) ===============
-# Δ of a target coefficient when dropping each cluster
 target_term <- "age"
 base_beta   <- unname(coef(best_fit)[target_term])
 
@@ -129,10 +125,10 @@ delta <- df |>
     unname(coef(m)[target_term]) - base_beta
   }))
 
-cat("\n=== LEAVE-ONE-CLUSTER-OUT Δ ON", target_term, "===\n"); print(arrange(delta, desc(abs(delta)))[1:10,])
+cat("\n=== LEAVE-ONE-CLUSTER-OUT Δ ON", target_term, "===\n")
+print(arrange(delta, desc(abs(delta)))[1:10,])
 
 # ====================== 6) VISUALIZATIONS =========================
-# (a) Coefficient forest (OR with CI)
 plot_df <- coefs |> filter(term != "(Intercept)") |>
   mutate(term = gsub("education", "educ:", term),
          term = gsub("gender", "gender:", term))
@@ -145,7 +141,6 @@ p_forest <- ggplot(plot_df, aes(x = OR, y = reorder(term, OR))) +
   labs(title = "Population-Average Odds Ratios (95% CI)",
        x = "Odds Ratio (log scale)", y = NULL)
 
-# (b) Marginal predicted probabilities over age (median covariates)
 ref <- df |>
   summarise(
     income = median(income, na.rm = TRUE),
@@ -164,15 +159,16 @@ p_marg <- ggplot(newd, aes(age, pred)) +
   geom_line(size = 1) +
   labs(title = "Predicted Probability of Poor Health vs. Age",
        x = "Age", y = "Predicted probability") +
-  coord_cartesian(ylim = c(0, 1))
+  coord_cartesian(ylim = c(0, 1)) +
+  theme(plot.title = element_text(size = 12, face = "bold"))
 
-# (c) Cluster influence plot
 p_infl <- ggplot(delta, aes(x = reorder(factor(community_id), delta), y = delta)) +
   geom_hline(yintercept = 0, linetype = 3) +
   geom_point(size = 2) +
   coord_flip() +
   labs(title = paste0("LOCO Δ on ", target_term, " Coefficient"),
-       x = "Community ID", y = expression(Delta~beta))
+       x = "Community ID", y = expression(Delta~beta)) +
+  theme(plot.title = element_text(size = 12, face = "bold"))
 
 print(p_forest); print(p_marg); print(p_infl)
 
@@ -189,4 +185,5 @@ ggsave("R_GEE/figs/gee_marg_age.png",  p_marg,   width = 7.4, height = 4.6, dpi 
 ggsave("R_GEE/figs/gee_loco_age.png",  p_infl,   width = 7.4, height = 6.0, dpi = 300)
 
 cat("\n=== DONE ===\nArtifacts written to R_GEE/out and R_GEE/figs.\n")
+
 
