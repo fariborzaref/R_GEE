@@ -20,7 +20,7 @@
 #'   - LOCO = leave-one-cluster-out Δ on a chosen coefficient
 #'   - Theme and labels tuned for journal-style clarity (no oversized titles)
 
-# 1) Packages & Theme ---------------------------------------------------------
+# 1) Packages & Theme ---------------------------------------------------
 
 req <- c("geepack","data.table","dplyr","ggplot2","broom","purrr","tidyr")
 to_install <- setdiff(req, rownames(installed.packages()))
@@ -40,7 +40,7 @@ theme_set(
 )
 set.seed(2025)
 
-# 2) Data: read if present, else simulate ------------------------------------
+# 2) Data: read if present, else simulate -------------------------------
 
 path <- "R_GEE/gee_input.csv"
 if (file.exists(path)) {
@@ -80,7 +80,7 @@ df <- df |>
     gender    = droplevels(gender)
   )
 
-# 3) Model formula & working correlations ------------------------------------
+# 3) Model formula & working correlations ------------------------------
 
 form <- poor_health ~ age + income + education + gender
 
@@ -106,7 +106,7 @@ best_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[
 ]]
 cat("Selected working correlation:", best_fit$corstr, "\n")
 
-# 4) Results: odds ratios with robust 95% CI ---------------------------------
+# 4) Results: odds ratios with robust 95% CI --------------------------
 
 sum_best <- summary(best_fit)
 coefs <- as.data.frame(sum_best$coefficients)
@@ -122,7 +122,7 @@ coefs <- coefs |>
 cat("\nPopulation-average effects (logit link → odds ratios):\n")
 print(coefs)
 
-# 5) Sensitivity: link & correlation structure -------------------------------
+# 5) Sensitivity: link & correlation structure -----------------------
 
 fit_probit <- geeglm(form, id = community_id, data = df,
                      family = binomial("probit"), corstr = best_fit$corstr)
@@ -140,7 +140,7 @@ sens_tbl <- tibble(
 cat("\nSensitivity (key coefficients across links/correlations):\n")
 print(round(sens_tbl, 4))
 
-# 6) Cluster influence (LOCO) ------------------------------------------------
+# 6) Cluster influence (LOCO) -------------------------------------------
 
 target_term <- "age"
 base_beta   <- unname(coef(best_fit)[target_term])
@@ -157,7 +157,7 @@ delta <- df |>
 cat("\nLeave-one-cluster-out Δ on", target_term, "coefficient (top 10 by |Δ|):\n")
 print(arrange(delta, desc(abs(delta)))[1:10,])
 
-# 7) Visualizations -----------------------------------------------------------
+# 7) Visualizations -----------------------------------------------------
 
 # 7a) Forest plot: odds ratios with CI (log scale)
 plot_df <- coefs |>
@@ -206,7 +206,7 @@ p_infl <- ggplot(delta, aes(x = reorder(factor(community_id), delta), y = delta)
 
 print(p_forest); print(p_marg); print(p_infl)
 
-# 8) Save tables and figures --------------------------------------------------
+# 8) Save tables and figures --------------------------------------------
 
 if (!dir.exists("R_GEE/out"))  dir.create("R_GEE/out", recursive = TRUE)
 if (!dir.exists("R_GEE/figs")) dir.create("R_GEE/figs", recursive = TRUE)
