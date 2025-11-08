@@ -1,222 +1,264 @@
-#' GENERALIZED ESTIMATING EQUATIONS (GEE) — Dr. Fariborz Aref
-#'
-#' Purpose:
-#'   Estimate population-average (marginal) effects in clustered social data 
-#'   to identify structural determinants of health and inequality at the 
-#'   community level. This workflow integrates sociological interpretation 
-#'   with reproducible quantitative modeling.
-#'
-#' Inputs (CSV if available):
-#'   R_GEE/gee_input.csv with columns:
-#'   - community_id, age, income, education{Low,Medium,High}, gender{Male,Female}, outcome{0/1}
-#'   If the file is absent, realistic synthetic data are simulated automatically 
-#'   to preserve full replicability.
-#'
-#' Outputs:
-#'   - Odds-ratio table with 95% CI:      R_GEE/out/gee_coefficients_or.csv
-#'   - QIC model comparison summary:      R_GEE/out/gee_qic_comparison.csv
-#'   - LOCO (cluster influence index):    R_GEE/out/gee_loco_delta_age.csv
-#'   - Figures:                           R_GEE/figs/
-#'       • gee_or_forest.png – coefficient map (OR + CI)
-#'       • gee_marg_age.png  – predicted probability curve
-#'       • gee_loco_age.png  – cluster-level sensitivity
-#'
-#' Features:
-#'   - Evaluates alternative working correlations via QIC (exchangeable, AR-1, independence)
-#'   - Includes sensitivity checks for link (logit vs probit) and correlation structure
-#'   - Computes LOCO (leave-one-cluster-out Δ) for coefficient robustness
-#'   - Generates publication-grade plots with harmonized typography
-#'   - Optional ICC estimation from residual correlation for sociological interpretation
-#'
-#' Author: Dr. Fariborz Aref | Sociologist & Quantitative Methodologist
-#' Date:   2025-10-17
-#' License: MIT
-# ------------------------------------------------------------------------------
+# ================================================================
+#  GENERALIZED ESTIMATING EQUATIONS (GEE)
+#  Author: Dr. Fariborz Aref | Sociologist & Quantitative Methodologist
+#  Date: 2025-10-17 | License: MIT
+# ================================================================
 
-# 1) Packages & Theme ----------------------------------------------------------
+# Purpose
+# Estimate population-average effects in clustered social data.
+# Target use: structural determinants of health and inequality at the community level.
+# Output is reproducible, publication-ready, and interpretable.
+
+# Inputs (CSV optional)
+#   R_GEE/gee_input.csv with columns:
+#   community_id, age, income, education{Low,Medium,High}, gender{Male,Female}, outcome{0,1}
+# If absent, realistic synthetic data are generated for full replicability.
+
+# Key outputs
+#   R_GEE/out/gee_coefficients_or.csv     Odds ratios with 95% CI
+#   R_GEE/out/gee_qic_comparison.csv      QIC model comparison
+#   R_GEE/out/gee_loco_delta_age.csv      Leave-one-cluster-out delta for age
+#   R_GEE/figs/gee_or_forest.png          Coefficient forest (OR + CI)
+#   R_GEE/figs/gee_marg_age.png           Predicted probability vs age
+#   R_GEE/figs/gee_loco_age.png           Cluster influence plot
+
+# Features
+#   • Working correlation selection by QIC: exchangeable, AR1, independence
+#   • Sensitivity checks: link (logit, probit) and correlation structure
+#   • LOCO robustness on a focal term (default: age)
+#   • Publication-grade plots with consistent typography
+#   • Optional ICC reporting when identifiable from the working model
+
+# ================================================================
+# 1) Packages and theme
+# ================================================================
 
 req <- c("geepack","data.table","dplyr","ggplot2","broom","purrr","tidyr")
 to_install <- setdiff(req, rownames(installed.packages()))
 if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
 invisible(lapply(req, library, character.only = TRUE))
 
+# Use a common system font if available; otherwise fall back silently
+base_family <- if ("Arial" %in% grDevices::windowsFonts()) "Arial" else NULL
+
 theme_set(
-  theme_minimal(base_size = 12) +
+  theme_minimal(base_size = 13, base_family = base_family) +
     theme(
-      plot.title   = element_text(size = 13, face = "bold", hjust = 0.5),
-      axis.title   = element_text(size = 11),
-      axis.text    = element_text(size = 10),
-      strip.text   = element_text(size = 11, face = "bold"),
-      legend.title = element_text(size = 10),
-      legend.text  = element_text(size = 9)
+      plot.title   = element_text(size = 14, face = "bold", hjust = 0.5),
+      axis.title   = element_text(size = 12),
+      axis.text    = element_text(size = 11),
+      strip.text   = element_text(size = 12, face = "bold"),
+      legend.title = element_text(size = 11),
+      legend.text  = element_text(size = 10)
     )
 )
+
 set.seed(2025)
 
-# 2) Data Import or Simulation -------------------------------------------------
+# ================================================================
+# 2) Data import or simulation
+# ================================================================
 
 path <- "R_GEE/gee_input.csv"
 if (file.exists(path)) {
-  df <- fread(path)
+  df <- data.table::fread(path)
   names(df) <- tolower(names(df))
-  stopifnot(all(c("community_id","age","income","education","gender","outcome") %in% names(df)))
+  required <- c("community_id","age","income","education","gender","outcome")
+  stopifnot(all(required %in% names(df)))
   df <- df |>
-    mutate(
+    dplyr::mutate(
       community_id = as.integer(community_id),
       education    = factor(education, levels = c("Low","Medium","High")),
       gender       = factor(gender,    levels = c("Male","Female")),
       poor_health  = as.integer(outcome)
     )
 } else {
-  n_clusters <- 60; n_i <- 10
+  n_clusters <- 60
+  n_i <- 10
+  N <- n_clusters * n_i
   df <- data.frame(
     community_id = rep(seq_len(n_clusters), each = n_i),
-    age          = rnorm(n_clusters*n_i, 40, 10),
-    income       = rnorm(n_clusters*n_i, 55000, 12000),
-    education    = factor(sample(c("Low","Medium","High"), n_clusters*n_i, TRUE),
+    age          = rnorm(N, 40, 10),
+    income       = rnorm(N, 55000, 12000),
+    education    = factor(sample(c("Low","Medium","High"), N, TRUE),
                           levels = c("Low","Medium","High")),
-    gender       = factor(sample(c("Male","Female"), n_clusters*n_i, TRUE),
+    gender       = factor(sample(c("Male","Female"), N, TRUE),
                           levels = c("Male","Female"))
   )
-  # Sociologically realistic latent structure
-  lp <- -3.2 + 0.05*(df$age - 40) - 0.00002*(df$income - 55000) -
-        0.35*(df$education == "Medium") - 0.8*(df$education == "High") -
+  # Latent structure consistent with known social gradients in health
+  lp <- -3.2 +
+        0.05*(df$age - 40) -
+        0.00002*(df$income - 55000) -
+        0.35*(df$education == "Medium") -
+        0.80*(df$education == "High") -
         0.25*(df$gender == "Female")
   p  <- 1/(1 + exp(-lp))
   df$poor_health <- rbinom(nrow(df), 1, p)
 }
 
 stopifnot(all(df$poor_health %in% c(0,1)))
-df <- df |> mutate(education = droplevels(education), gender = droplevels(gender))
+df <- df |>
+  dplyr::mutate(
+    education = droplevels(education),
+    gender    = droplevels(gender)
+  )
 
-# 3) Model Definition ----------------------------------------------------------
+# ================================================================
+# 3) Model specification
+# ================================================================
 
 form <- poor_health ~ age + income + education + gender
 
-fit_exch <- geeglm(form, id = community_id, data = df,
-                   family = binomial("logit"), corstr = "exchangeable")
-fit_ar1  <- geeglm(form, id = community_id, data = df,
-                   family = binomial("logit"), corstr = "ar1")
-fit_ind  <- geeglm(form, id = community_id, data = df,
-                   family = binomial("logit"), corstr = "independence")
+fit_exch <- geepack::geeglm(form, id = community_id, data = df,
+                            family = binomial("logit"), corstr = "exchangeable")
+fit_ar1  <- geepack::geeglm(form, id = community_id, data = df,
+                            family = binomial("logit"), corstr = "ar1")
+fit_ind  <- geepack::geeglm(form, id = community_id, data = df,
+                            family = binomial("logit"), corstr = "independence")
 
-qic_tbl <- tibble(
+qic_tbl <- tibble::tibble(
   model = c("exchangeable","ar1","independence"),
-  QIC   = c(QIC(fit_exch)[1], QIC(fit_ar1)[1], QIC(fit_ind)[1]),
-  QICu  = c(QIC(fit_exch)[2], QIC(fit_ar1)[2], QIC(fit_ind)[2])
-) |> arrange(QIC)
+  QIC   = c(geepack::QIC(fit_exch)[1], geepack::QIC(fit_ar1)[1], geepack::QIC(fit_ind)[1]),
+  QICu  = c(geepack::QIC(fit_exch)[2], geepack::QIC(fit_ar1)[2], geepack::QIC(fit_ind)[2])
+) |>
+  dplyr::arrange(QIC)
 
-cat("\nQIC model comparison (lower is better):\n"); print(qic_tbl)
+best_key <- c("exch","ar1","ind")[which.min(qic_tbl$QIC)]
+best_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[best_key]]
 
-best_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[
-  c("exch","ar1","ind")[which.min(qic_tbl$QIC)]
-]]
-cat("Selected working correlation:", best_fit$corstr, "\n")
-
-# 4) Results: Odds Ratios and CI ----------------------------------------------
+# ================================================================
+# 4) Odds ratios and confidence intervals
+# ================================================================
 
 sum_best <- summary(best_fit)
 coefs <- as.data.frame(sum_best$coefficients)
 coefs$term <- rownames(coefs); rownames(coefs) <- NULL
+
 coefs <- coefs |>
-  select(term, Estimate, Std.err = Std.err, p = `Pr(>|W|)`) |>
-  mutate(
+  dplyr::select(term, Estimate, Std.err = Std.err, p = `Pr(>|W|)`) |>
+  dplyr::mutate(
     OR   = exp(Estimate),
     lo95 = exp(Estimate - 1.96*Std.err),
     hi95 = exp(Estimate + 1.96*Std.err)
   )
-cat("\nPopulation-average effects (logit link → odds ratios):\n"); print(coefs)
 
-# Optional: compute intra-cluster correlation (empirical approximation)
-rho <- with(best_fit, mean(cor(residuals(best_fit), lag(residuals(best_fit), na.pad=TRUE), use="complete.obs"), na.rm=TRUE))
-cat(sprintf("\nApproximate within-cluster correlation (empirical ICC): %.3f\n", rho))
+# Report an interpretable within cluster correlation when available
+icc_note <- NA_real_
+if (tolower(best_fit$corstr) == "exchangeable") {
+  icc_note <- as.numeric(best_fit$geese$alpha)  # exchangeable alpha serves as ICC
+}
 
-# 5) Sensitivity: link & correlation structure ---------------------------------
+# ================================================================
+# 5) Sensitivity checks
+# ================================================================
 
-fit_probit <- geeglm(form, id = community_id, data = df,
-                     family = binomial("probit"), corstr = best_fit$corstr)
+fit_probit <- geepack::geeglm(form, id = community_id, data = df,
+                              family = binomial("probit"), corstr = best_fit$corstr)
 second_idx <- order(qic_tbl$QIC)[2]
-second_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[
-  c("exch","ar1","ind")[second_idx]
-]]
+second_fit <- list(exch = fit_exch, ar1 = fit_ar1, ind = fit_ind)[[ c("exch","ar1","ind")[second_idx] ]]
 
-sens_tbl <- tibble(
-  spec   = c("Logit + Best corstr", "Probit + Best corstr", paste0("Logit + ", second_fit$corstr)),
+sens_tbl <- tibble::tibble(
+  spec   = c("Logit + best corstr", "Probit + best corstr", paste0("Logit + ", second_fit$corstr)),
   age    = c(coef(best_fit)["age"],    coef(fit_probit)["age"],    coef(second_fit)["age"]),
   income = c(coef(best_fit)["income"], coef(fit_probit)["income"], coef(second_fit)["income"])
 )
-cat("\nSensitivity (key coefficients across links/correlations):\n"); print(round(sens_tbl, 4))
 
-# 6) Cluster Influence (LOCO) --------------------------------------------------
+# ================================================================
+# 6) Cluster influence: leave one cluster out
+# ================================================================
 
 target_term <- "age"
 base_beta   <- unname(coef(best_fit)[target_term])
 
 delta <- df |>
-  distinct(community_id) |>
-  mutate(delta = purrr::map_dbl(community_id, function(cid) {
+  dplyr::distinct(community_id) |>
+  dplyr::mutate(delta = purrr::map_dbl(community_id, function(cid) {
     sub <- dplyr::filter(df, community_id != cid)
-    m   <- geeglm(form, id = community_id, data = sub,
-                  family = binomial("logit"), corstr = best_fit$corstr)
+    m   <- geepack::geeglm(form, id = community_id, data = sub,
+                           family = binomial("logit"), corstr = best_fit$corstr)
     unname(coef(m)[target_term]) - base_beta
   }))
-cat("\nLeave-one-cluster-out Δ on", target_term, "coefficient (top 10 by |Δ|):\n")
-print(arrange(delta, desc(abs(delta)))[1:10,])
 
-# 7) Visualization -------------------------------------------------------------
+# ================================================================
+# 7) Visualization
+# ================================================================
 
-# Forest plot: odds ratios with CI (log scale)
-plot_df <- coefs |> filter(term != "(Intercept)") |>
-  mutate(term = gsub("education", "educ:", term),
-         term = gsub("gender", "gender:", term))
-p_forest <- ggplot(plot_df, aes(x = OR, y = reorder(term, OR))) +
-  geom_vline(xintercept = 1, linetype = 3) +
-  geom_point(size = 2) +
-  geom_errorbarh(aes(xmin = lo95, xmax = hi95), height = 0.15) +
-  scale_x_continuous(trans = "log10") +
-  labs(title = "Population-Average Odds Ratios (95% CI)",
-       x = "Odds Ratio (log scale)", y = NULL)
+# Forest plot for odds ratios
+plot_df <- coefs |>
+  dplyr::filter(term != "(Intercept)") |>
+  dplyr::mutate(term = gsub("education", "educ:", term),
+                term = gsub("gender", "gender:", term))
+
+p_forest <- ggplot2::ggplot(plot_df, aes(x = OR, y = reorder(term, OR))) +
+  ggplot2::geom_vline(xintercept = 1, linetype = 3) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_errorbarh(aes(xmin = lo95, xmax = hi95), height = 0.15) +
+  ggplot2::scale_x_continuous(trans = "log10") +
+  ggplot2::labs(
+    title = "Population average odds ratios with 95% confidence",
+    x = "Odds ratio (log scale)", y = NULL
+  )
 
 # Marginal predicted probability over age
-ref <- df |> summarise(income = median(income, na.rm = TRUE),
-                       education = levels(education)[1],
-                       gender = levels(gender)[1])
-age_grid <- tibble(age = seq(20, 70, by = 1))
+ref <- df |>
+  dplyr::summarise(
+    income = stats::median(income, na.rm = TRUE),
+    education = levels(education)[1],
+    gender = levels(gender)[1]
+  )
+
+age_grid <- tibble::tibble(age = seq(20, 70, by = 1))
 newd <- tidyr::crossing(ref, age_grid)
-lp   <- predict(best_fit, newdata = newd, type = "link", se.fit = TRUE)
+
+lp   <- stats::predict(best_fit, newdata = newd, type = "link", se.fit = TRUE)
 newd$pred <- best_fit$family$linkinv(lp$fit)
 newd$lo   <- best_fit$family$linkinv(lp$fit - 1.96*lp$se.fit)
 newd$hi   <- best_fit$family$linkinv(lp$fit + 1.96*lp$se.fit)
-p_marg <- ggplot(newd, aes(age, pred)) +
-  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15) +
-  geom_line(size = 1) +
-  labs(title = "Predicted Probability of Poor Health vs. Age",
-       x = "Age", y = "Predicted probability") +
-  coord_cartesian(ylim = c(0, 1))
 
-# LOCO influence plot
-p_infl <- ggplot(delta, aes(x = reorder(factor(community_id), delta), y = delta)) +
-  geom_hline(yintercept = 0, linetype = 3) +
-  geom_point(size = 2) +
-  coord_flip() +
-  labs(title = paste0("LOCO Δ on ", target_term, " Coefficient"),
-       x = "Community ID", y = expression(Delta~beta))
+p_marg <- ggplot2::ggplot(newd, aes(age, pred)) +
+  ggplot2::geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15) +
+  ggplot2::geom_line(size = 1) +
+  ggplot2::labs(
+    title = "Predicted probability of poor health by age",
+    x = "Age", y = "Predicted probability"
+  ) +
+  ggplot2::coord_cartesian(ylim = c(0, 1))
+
+# Cluster influence plot
+p_infl <- ggplot2::ggplot(delta, aes(x = reorder(factor(community_id), delta), y = delta)) +
+  ggplot2::geom_hline(yintercept = 0, linetype = 3) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::coord_flip() +
+  ggplot2::labs(
+    title = paste0("Leave one cluster out delta on ", target_term),
+    x = "Community ID", y = expression(Delta~beta)
+  )
 
 print(p_forest); print(p_marg); print(p_infl)
 
-# 8) Save Outputs --------------------------------------------------------------
+# ================================================================
+# 8) Save outputs
+# ================================================================
 
 if (!dir.exists("R_GEE/out"))  dir.create("R_GEE/out", recursive = TRUE)
 if (!dir.exists("R_GEE/figs")) dir.create("R_GEE/figs", recursive = TRUE)
 
-fwrite(coefs,  "R_GEE/out/gee_coefficients_or.csv")
-fwrite(qic_tbl,"R_GEE/out/gee_qic_comparison.csv")
-fwrite(delta,  "R_GEE/out/gee_loco_delta_age.csv")
+data.table::fwrite(coefs,  "R_GEE/out/gee_coefficients_or.csv")
+data.table::fwrite(qic_tbl,"R_GEE/out/gee_qic_comparison.csv")
+data.table::fwrite(delta,  "R_GEE/out/gee_loco_delta_age.csv")
 
-ggsave("R_GEE/figs/gee_or_forest.png", p_forest, width = 7.2, height = 4.6, dpi = 300)
-ggsave("R_GEE/figs/gee_marg_age.png",  p_marg,   width = 7.2, height = 4.4, dpi = 300)
-ggsave("R_GEE/figs/gee_loco_age.png",  p_infl,   width = 7.2, height = 5.6, dpi = 300)
+ggplot2::ggsave("R_GEE/figs/gee_or_forest.png", p_forest, width = 7.2, height = 4.6, dpi = 300)
+ggplot2::ggsave("R_GEE/figs/gee_marg_age.png",  p_marg,   width = 7.2, height = 4.4, dpi = 300)
+ggplot2::ggsave("R_GEE/figs/gee_loco_age.png",  p_infl,   width = 7.2, height = 5.6, dpi = 300)
 
-cat("\n✓ Execution complete. Results exported to R_GEE/out and R_GEE/figs.\n")
+cat("\nQIC model comparison (lower is better):\n"); print(qic_tbl)
+cat("Selected working correlation: ", best_fit$corstr, "\n", sep = "")
+if (!is.na(icc_note)) {
+  cat(sprintf("Approximate within cluster correlation (exchangeable alpha): %.3f\n", icc_note))
+} else {
+  cat("Within cluster correlation not directly reported for this structure.\n")
+}
+cat("\nExecution complete. Results exported to R_GEE/out and R_GEE/figs.\n")
+
 
 
