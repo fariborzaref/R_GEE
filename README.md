@@ -1,21 +1,21 @@
-# GENERALIZED ESTIMATING EQUATIONS (GEE)
-# Author: Dr. Fariborz Aref | Sociologist & Quantitative Methodologist
-# Date: 2025-10-17 | License: MIT
+#GENERALIZED ESTIMATING EQUATIONS (GEE)
+#: Dr. Fariborz Aref | Sociologist & Quantitative Methodologist
+#Date: 2025-10-17 | License: MIT
 
-# Purpose
-# Estimate population average effects in clustered social data for structural health and inequality work.
+#Purpose
+#Estimate population average effects in clustered social data for structural health and inequality work.
 
-# Inputs
-# R_GEE/gee_input.csv with: community_id, age, income, education{Low,Medium,High}, gender{Male,Female}, outcome{0,1}
-# If missing, synthetic data are generated.
+#Inputs
+#R_GEE/gee_input.csv with: community_id, age, income, education{Low,Medium,High}, gender{Male,Female}, outcome{0,1}
+#If missing, synthetic data are generated.
 
-# Outputs
-# R_GEE/out/gee_coefficients_or.csv
-# R_GEE/out/gee_qic_comparison.csv
-# R_GEE/out/gee_loco_delta_age.csv
-# R_GEE/figs/gee_or_forest.png
-# R_GEE/figs/gee_marg_age.png
-# R_GEE/figs/gee_loco_age.png
+#Outputs
+#R_GEE/out/gee_coefficients_or.csv
+#R_GEE/out/gee_qic_comparison.csv
+#R_GEE/out/gee_loco_delta_age.csv
+#R_GEE/figs/gee_or_forest.png
+#R_GEE/figs/gee_marg_age.png
+#R_GEE/figs/gee_loco_age.png
 
 req <- c("geepack","data.table","dplyr","ggplot2","broom","purrr","tidyr")
 to_install <- setdiff(req, rownames(installed.packages()))
