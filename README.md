@@ -13,10 +13,6 @@ Implements **logit GEE models**, **QIC-based model comparison**, and **leave-one
 
 ---
 
-### Structure
-R_GEE/
-
-
 ### Quick Example
 ```r
 library(geepack)
